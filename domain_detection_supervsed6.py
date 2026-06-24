@@ -306,9 +306,88 @@ def train_mlp_on_adata(adata, obsm_key, obs_label_key, test_size=0.2,
     print(f'Final Test Accuracy: {final_test_acc:.2f}%, '
           f'Final Test ARI: {final_test_ari:.2f}')
     
+    # === 使用与训练一致的预处理在全量 adata 上预测并写回 obs ===
+    # 1) 根据 feature_info 重建整张表的原始特征矩阵（未缩放）
+    if feature_info['type'] == 'highly_variable_genes':
+        required_genes = feature_info['gene_names']
+        missing = set(required_genes) - set(adata.var_names)
+        if missing:
+            raise ValueError(f"新数据缺失训练时使用的基因: {len(missing)} 个")
+        adata_sub = adata[:, required_genes]
+        X_full = adata_sub.X.toarray() if hasattr(adata_sub.X, 'toarray') else adata_sub.X
+    else:
+        obsm_key_tr = feature_info['obsm_key']
+        if obsm_key_tr not in adata.obsm:
+            raise ValueError(f"obsm 键 '{obsm_key_tr}' 不在 adata.obsm")
+        X_full = adata.obsm[obsm_key_tr]
+
+    # 2) 如果训练时用了基于特征空间的 KNN 平滑，则在全量样本上同样平滑
+    if knn_smooth_k is not None and knn_smooth_k > 0:
+        from sklearn.neighbors import NearestNeighbors
+        knn = NearestNeighbors(n_neighbors=knn_smooth_k + 1)
+        knn.fit(X_full)
+        _, indices = knn.kneighbors(X_full)
+        X_full = np.mean(X_full[indices], axis=1)
+
+    # 3) 如果训练时用了基于空间坐标的 KNN 平滑，也在全量样本上同样平滑
+    if knn_k > 0:
+        if 'spatial' not in adata.obsm or 'source_file' not in adata.obs:
+            raise ValueError("空间 KNN 平滑需要 adata.obsm['spatial'] 和 adata.obs['source_file']")
+        spatial_coords = adata.obsm['spatial']
+        X_smoothed = np.zeros_like(X_full)
+        unique_files = adata.obs['source_file'].unique()
+        for file in unique_files:
+            file_mask = adata.obs['source_file'] == file
+            idx = np.where(file_mask)[0]
+            if len(idx) == 0:
+                continue
+            file_spatial = spatial_coords[idx]
+            file_X = X_full[idx]
+            n_cells = len(idx)
+            k_actual = min(knn_k, n_cells - 1)
+            if k_actual < 1:
+                X_smoothed[idx] = file_X
+                continue
+            from sklearn.neighbors import NearestNeighbors
+            knn_spatial = NearestNeighbors(n_neighbors=k_actual + 1)
+            knn_spatial.fit(file_spatial)
+            _, inds = knn_spatial.kneighbors(file_spatial)
+            for i_local in range(len(idx)):
+                neigh = inds[i_local, 1:1 + k_actual]
+                if len(neigh) > 0:
+                    X_smoothed[idx[i_local]] = np.mean(file_X[neigh], axis=0)
+                else:
+                    X_smoothed[idx[i_local]] = file_X[i_local]
+        X_full = X_smoothed
+
+    # 4) 预测前处理 NaN（预测时通常要对所有点做填充）
+    if np.isnan(X_full).any():
+        col_means = np.nanmean(X_full, axis=0)
+        inds = np.where(np.isnan(X_full))
+        X_full[inds] = np.take(col_means, inds[1])
+
+    # 5) 用训练时的 scaler 做标准化（注意：X_full 此时仍为原始尺度，因此 transform 是必要的）
+    X_full_scaled = scaler.transform(X_full)
+
+    # 6) 预测（在 device 上）
+    X_full_tensor = torch.FloatTensor(X_full_scaled).to(device)
+    model.eval()
+    with torch.no_grad():
+        logits_full = model(X_full_tensor)
+        preds_full = torch.argmax(logits_full, axis=1).cpu().numpy()
+    decoded_full = le.inverse_transform(preds_full)
+
+    # 7) 把预测写回原始 adata；无效样本保留为 unlabeled
+    preds_out = np.array(['unlabeled'] * adata.n_obs, dtype=object)
+    preds_out[valid_indices] = decoded_full
+    adata.obs[predict_key] = pd.Categorical(preds_out)
+
+    if save_path:
+        adata.write_h5ad(save_path)
+        print(f"Saved AnnData to: {save_path}")
+
     
-    
-    return model, X_test, y_test, history, le, scaler, feature_info
+    return model, X_test, y_test, history, le, scaler, feature_info,adata
 
 def evaluate_model(model, X_test, y_test):
     """评估模型性能"""
@@ -527,10 +606,13 @@ def predict_mlp_on_adata(model, adata, feature_info, scaler, le,
     
     return adata
 
+
+
 # 3. 示例使用方式
 def main():
+    
     # 所有切片上随机划分训练测试，使用邻居嵌入的平均值
-    directory_path = 'project1/spatial_data/down_stream_data/Colorectal cancer histopathologyspatial transcriptomics data from Valdeolivas et al'
+    directory_path = 'spatial_data/down_stream_data/human_breast_cancer/test'
     # 获取目录下所有.h5ad文件 [1,5](@ref)
     h5ad_files = [f for f in os.listdir(directory_path) if f.endswith('.h5ad')]
     train_files = [f for f in h5ad_files]
@@ -559,21 +641,21 @@ def main():
         )
     #print(adata_train.obs['Pathologist Annotation'].unique())    
     # 随机划分训练集测试集
-    model, X_test, y_test, history, le, scaler,feature_info = train_mlp_on_adata(
+    model, X_test, y_test, history, le, scaler,feature_info,adata = train_mlp_on_adata(
         adata_train, 
-        obsm_key='X_emb512_model40_16_hvg',  # 使用的特征 X_emb_scGPTspatial、X_emb_scGPT、X_emb512_model40_16_uniform_random
-        obs_label_key='Pathologist Annotation',  # 细胞类型标签 DLPFC:sce.layer_guess human_lymph_node:manual-anno
+        obsm_key='X_emb_scGPTspatial',  # 使用的特征 X_emb_scGPTspatial、X_emb_scGPT、X_emb512_model40_16_uniform_random
+        obs_label_key='ground_truth',  # 细胞类型标签 DLPFC:sce.layer_guess human_lymph_node:manual-anno
         test_size=0.8,                    # 细胞类型标签 Colorectal cancer:Pathologist Annotation human_breast_cancer\ST_Hippocampus:ground_truth
         epochs=500,                       # 细胞类型标签 Human_tonsil:final_annot
         warm_up_epochs=20,  # 使用warm up策略
         warm_up_factor=0.1, # 初始学习率为最终学习率的1%
         structure='mlp',  # 使用'mlp'或'transformer'
-        knn_k=0,
-        predict_key='X_emb512_model40_16',# data_split 表示测试集训练集
-        save_path='project1/spatial_data/down_stream_data/raw_data_DLPFC/k_with_emb_with_emb.h5ad',
+        knn_k=16,
+        predict_key='scGPTspatial',# data_split 表示测试集训练集
+        #save_path='project1/spatial_data/down_stream_data/raw_data_DLPFC/k_with_emb_with_emb.h5ad',
     )
     '''
-    new_adata = ad.read_h5ad("project1/spatial_data/down_stream_data/10x_human_lymph_node/A1/A1_RNA.h5ad")
+    new_adata = ad.read_h5ad("model_outputs/breast_spatial.h5ad")
     new_adata.obs['source_file'] = 'train_file'
     # 预测标签
     predict_mlp_on_adata(
@@ -582,12 +664,12 @@ def main():
         feature_info=feature_info,
         scaler=scaler,
         le=le,
-        knn_smooth_k=0,  # 与训练时一致
-        knn_k=16,         # 与训练时一致
-        output_obs_key='X_emb_scGPT',
-        save_path='project1/spatial_data/down_stream_data/10x_human_lymph_node/A1/A1_RNA.h5ad'
+        knn_smooth_k=16,  # 与训练时一致
+        knn_k=0,         # 与训练时一致
+        output_obs_key='pred_scGPTspatial',
+        save_path='model_outputs/breast_spatial.h5ad'
     )
-'''
+    '''
 # 切片上训练测试
 if __name__ == "__main__":
     main()

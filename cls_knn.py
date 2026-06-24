@@ -307,15 +307,15 @@ def save_results_to_files(results, args, final_adata=None, trial_num=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # -------------------------- 关键参数 --------------------------
-    parser.add_argument("--feature_mode", type=str, default="topk_genes", choices=["emb", "topk_genes"],
+    parser.add_argument("--feature_mode", type=str, default="emb", choices=["emb", "topk_genes"],
                         help="Feature type: 'emb' (use pre-stored emb) or 'topk_genes' (use top-k HVGs)")
-    parser.add_argument("--h5ad_path", default="project1/spatial_data/down_stream_data/human_breast_cancer", 
+    parser.add_argument("--h5ad_path", default="spatial_data/down_stream_data/10x_human_lymph_node/A1/A1_RNA_STAGATE_pyG.h5ad", 
                         type=str, help="Path to a .h5ad file OR a directory containing multiple .h5ad files")
-    parser.add_argument("--emb_name", type=str, default="X_emb512_model40_16",
+    parser.add_argument("--emb_name", type=str, default="STAGATE",
                         help="Key of pre-stored emb in adata.obsm (required if feature_mode='emb')")
     parser.add_argument("--topk", type=int, default=512, 
                         help="Number of top highly variable genes (required if feature_mode='topk_genes')")
-    parser.add_argument("--label_key", default="ground_truth", type=str, 
+    parser.add_argument("--label_key", default="Ground Truth", type=str, 
                         help="Key of cell type label in adata.obs")
     parser.add_argument("--knn_k", type=int, default=10, help="k for KNN classifier")
     parser.add_argument("--k_smooth", type=int, default=0, help="k for KNN smooth (0 to disable)")

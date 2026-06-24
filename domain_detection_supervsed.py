@@ -182,10 +182,21 @@ def train_mlp_on_adata(adata, obsm_key, obs_label_key, test_size=0.2,
                   f'Train Acc: {train_acc:.2f}%, '
                   f'Test Acc: {test_acc:.2f}%')
     
+
     # 最终评估
     final_test_acc = evaluate_model(model, X_test_tensor, y_test_tensor)
     print(f'Final Test Accuracy: {final_test_acc:.2f}%')
-    
+
+    # === 保存预测标签和数据集类型 ===
+    adata_pred_X = scaler.transform(X)  # 标准化
+    adata_pred_X_tensor = torch.FloatTensor(adata_pred_X).to(device)
+    model.eval()
+    with torch.no_grad():
+        logits = model(adata_pred_X_tensor)
+        preds = torch.argmax(logits, axis=1).cpu().numpy()
+        pred_labels = le.inverse_transform(preds)
+    adata.obs["pred_512"] = pred_labels
+
     return model, X_test, y_test, history, le
 
 def evaluate_model(model, X_test, y_test):
@@ -274,18 +285,16 @@ class MLPClassifier(nn.Module):
             
             # 5. 输出分类结果
             return self.output_layer(class_output)  # (batch_size, num_classes)
-
 # 3. 示例使用方式
 def main():
     # 随机划分训练集测试集
-    h5ad_path = 'project1/spatial_data/raw_data_DLPFC/DLPFC/151507.h5ad'
+    h5ad_path = 'project1/spatial_data/down_stream_data/human_breast_cancer/breast_spatial.h5ad'
     adata = ad.read_h5ad(h5ad_path)
-
     model, X_test, y_test, history, le = train_mlp_on_adata(
         adata, 
-        obsm_key='X_emb512_model40',  # 使用的特征
-        obs_label_key='sce.layer_guess',  # 细胞类型标签
-        test_size=0.2,
+        obsm_key='512',  # 使用的特征
+        obs_label_key='ground_truth',  # 细胞类型标签
+        test_size=0.8,
         epochs=300,
         warm_up_epochs=20,  # 使用warm up策略
         warm_up_factor=0.1, # 初始学习率为最终学习率的1%

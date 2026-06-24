@@ -376,7 +376,7 @@ def main():
         warm_up_epochs=20,
         warm_up_factor=0.1,
         structure='mlp',
-        knn_smooth_k=0,
+        knn_smooth_k=16,
         hvg_selection_source = 'test',
     )
 

@@ -310,17 +310,17 @@ def save_results_to_files(results, args, final_adata=None):
 
 
 # ========================== 8. 主函数 ==========================
-def main():# /mnt/data/test2/anaconda3/envs/project1/bin/python project1/cls_knn2.py
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--feature_mode", type=str, default="topk_genes", choices=["emb", "topk_genes"])
     parser.add_argument("--h5ad_path", type=str,
-                        default="project1/spatial_data/down_stream_data/raw_data_DLPFC/DLPFC",
+                        default="spatial_data/down_stream_data/Human_tonsil/slice1_adata_rna_STAGATE_pyG.h5ad",
                         help="Path to a .h5ad file OR a directory containing multiple .h5ad files")
-    parser.add_argument("--emb_name", type=str, default="X_emb512_model40_16",
+    parser.add_argument("--emb_name", type=str, default="STAGATE",
                         help="obsm key for embeddings (if feature_mode='emb')")
     parser.add_argument("--topk", type=int, default=512,
                         help="Top-k HVGs (if feature_mode='topk_genes')")
-    parser.add_argument("--label_key", type=str, default="sce.layer_guess")
+    parser.add_argument("--label_key", type=str, default="Ground Truth")
     parser.add_argument("--knn_k", type=int, default=10)
     parser.add_argument("--k_smooth", type=int, default=0,
                         help="K for within-file KNN smoothing (0 to disable)")
@@ -430,10 +430,9 @@ def main():# /mnt/data/test2/anaconda3/envs/project1/bin/python project1/cls_knn
     print(f"{'obsm_key':<30} {'Accuracy (mean±std)':<28} {'ARI (mean±std)':<24} k_smooth")
     print("-" * 80)
     for r in all_results:
-        print(f"{r['obsm_key']:<30} {r['mean_accuracy']:.2f}% ± {r['std_accuracy']:.2f}%"
-              f"{' ' * (8 - len(f'{r['std_accuracy']:.2f}%'))}"
-              f"{r['mean_ari']:.4f} ± {r['std_ari']:.4f}{' ' * (6 - len(f'{r['std_ari']:.4f}'))}"
-              f" {r['k_smooth_used']}")
+        acc_text = f"{r['mean_accuracy']:.2f}% ± {r['std_accuracy']:.2f}%"
+        ari_text = f"{r['mean_ari']:.4f} ± {r['std_ari']:.4f}"
+        print(f"{r['obsm_key']:<30} {acc_text:<28} {ari_text:<24} {r['k_smooth_used']}")
     print("=" * 80)
     print("Done.")
 
